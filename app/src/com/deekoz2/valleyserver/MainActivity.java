@@ -1,23 +1,29 @@
 package com.deekoz2.valleyserver;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -73,7 +79,10 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
     final List<String> pkgs = new ArrayList<String>();
     final List<String> names = new ArrayList<String>();
     final List<Boolean> waiting = new ArrayList<Boolean>();
+    final List<String> history = new ArrayList<String>();
     int selected = 0;
+
+    static final String ISSUES_URL = "https://github.com/deekoz2/StarDewOpener/issues/new";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -184,6 +193,10 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         root.addView(gap(10));
         root.addView(button("打开终端", 0xFF1E3A5F, new View.OnClickListener() {
             @Override public void onClick(View v) { openTerminal(); }
+        }));
+        root.addView(gap(10));
+        root.addView(button("反馈问题（提交 GitHub Issue）", 0xFF0F766E, new View.OnClickListener() {
+            @Override public void onClick(View v) { feedbackDialog(); }
         }));
         root.addView(gap(10));
         root.addView(button("使用说明", 0xFF334155, new View.OnClickListener() {
@@ -424,6 +437,114 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         }
     }
 
+    /* ---------------- 反馈问题（GitHub Issue） ---------------- */
+
+    void feedbackDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(text("描述你遇到的问题，提交后会作为 Issue 发到\nGitHub 仓库 deekoz2/StarDewOpener（需浏览器已登录 GitHub）",
+                12, 0xFF94A3B8, Typeface.NORMAL));
+        box.addView(gap(8));
+        final EditText input = new EditText(this);
+        input.setHint("例如：一键安装卡在 tmoe 菜单 / valley 启动报错…");
+        input.setMinLines(4);
+        input.setGravity(Gravity.TOP);
+        input.setTextSize(13);
+        box.addView(input);
+        box.addView(gap(4));
+        final CheckBox attach = new CheckBox(this);
+        attach.setText("附带环境信息与运行日志");
+        attach.setChecked(true);
+        attach.setTextSize(13);
+        box.addView(attach);
+
+        new AlertDialog.Builder(this)
+                .setTitle("反馈问题")
+                .setView(box)
+                .setPositiveButton("提交到 GitHub", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        submitIssue(input.getText().toString(), attach.isChecked());
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    void submitIssue(String desc, boolean attach) {
+        if (desc == null || desc.trim().length() == 0) {
+            log("✗ 请先填写问题描述再提交");
+            return;
+        }
+        String d = desc.trim();
+        if (d.length() > 3000) {
+            d = d.substring(0, 3000) + "…（已截断）";
+        }
+        String title = "[APP反馈] " + d.split("\n")[0];
+        if (title.length() > 80) {
+            title = title.substring(0, 80);
+        }
+        StringBuilder b = new StringBuilder();
+        b.append(d).append("\n\n---\n").append(envInfo());
+        if (attach) {
+            b.append("\n\n<details><summary>运行日志</summary>\n\n```\n")
+             .append(recentLog(40)).append("\n```\n\n</details>");
+        }
+        String body = b.toString();
+        if (body.length() > 6000) {
+            body = body.substring(0, 6000);
+        }
+        String url = ISSUES_URL + "?title=" + Uri.encode(title) + "&body=" + Uri.encode(body);
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            log("→ 已打开浏览器填写 Issue，确认内容后点「Submit new issue」即提交；");
+            log("  若浏览器未登录 GitHub，请先登录再回来重新提交一次。");
+        } catch (Throwable t) {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("issue", "标题: " + title + "\n\n" + body));
+                log("✗ 无法打开浏览器，Issue 内容已复制到剪贴板，");
+                log("  请手动到 " + ISSUES_URL + " 粘贴提交");
+            } catch (Throwable t2) {
+                log("✗ 无法打开浏览器且复制失败：" + t.getMessage());
+            }
+        }
+    }
+
+    String envInfo() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("- APP: 星露谷开服器 v").append(versionOf(getPackageName()));
+        sb.append("\n- Android: ").append(Build.VERSION.RELEASE)
+          .append(" (API ").append(Build.VERSION.SDK_INT).append(")");
+        sb.append("\n- 设备: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL);
+        sb.append("\n- 检测到终端: ");
+        if (pkgs.isEmpty()) {
+            sb.append("无");
+        } else {
+            for (int i = 0; i < pkgs.size(); i++) {
+                sb.append(names.get(i)).append("(").append(pkgs.get(i))
+                  .append(" v").append(versionOf(pkgs.get(i))).append(")");
+                if (i < pkgs.size() - 1) {
+                    sb.append("、");
+                }
+            }
+        }
+        sb.append("\n- 一键安装目标: ");
+        sb.append(pkgs.isEmpty() ? "无" : names.get(selected) + " (" + pkgs.get(selected) + ")");
+        return sb.toString();
+    }
+
+    String recentLog(int n) {
+        int from = history.size() > n ? history.size() - n : 0;
+        StringBuilder sb = new StringBuilder();
+        for (int i = from; i < history.size(); i++) {
+            sb.append(history.get(i)).append("\n");
+        }
+        return sb.toString();
+    }
+
     /* ---------------- RUN_COMMAND 发送 ---------------- */
 
     PendingIntent getPi(int idx) {
@@ -493,6 +614,10 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
     void log(final String s) {
         ui.post(new Runnable() {
             @Override public void run() {
+                history.add(s);
+                if (history.size() > 200) {
+                    history.remove(0);
+                }
                 logView.append(s + "\n");
                 logScroll.post(new Runnable() {
                     @Override public void run() {

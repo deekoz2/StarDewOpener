@@ -50,8 +50,10 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
     static final String INSTALL_URL =
             "https://raw.githubusercontent.com/deekoz2/ValleyServer-arm64/main/install.sh";
     static final String INSTALL_CMD =
-            "apt update -y; apt install -y curl; curl -fsSL " + INSTALL_URL
-                    + " -o ~/valley-install.sh && bash ~/valley-install.sh";
+            "apt update -y; "
+                    + "DEBIAN_FRONTEND=noninteractive apt upgrade -y -o Dpkg::Options::=--force-confold; "
+                    + "pkg install -y curl openssl; "
+                    + "curl -fsSL " + INSTALL_URL + " -o ~/valley-install.sh && bash ~/valley-install.sh";
 
     static final String ALLOW_CMD =
             "mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties";

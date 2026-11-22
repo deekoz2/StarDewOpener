@@ -105,6 +105,8 @@ public class ValleyService extends Service {
             env.put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
             // ubuntu-base 无 libicu：开启 .NET 不变文化模式（对游戏服务器无影响）
             env.put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
+            // 帮助游戏 dlopen 找到 /opt/valleyserver 下的原生库
+            env.put("LD_LIBRARY_PATH", bin.getAbsolutePath() + ":/opt/valleyserver");
 
             proc = pb.start();
             append("✓ 服务器进程已启动（UDP 24642，控制台输出见下）");

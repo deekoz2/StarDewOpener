@@ -53,7 +53,13 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
             "apt update -y; "
                     + "DEBIAN_FRONTEND=noninteractive apt upgrade -y -o Dpkg::Options::=--force-confold; "
                     + "pkg install -y curl openssl; "
-                    + "curl -fsSL " + INSTALL_URL + " -o ~/valley-install.sh && bash ~/valley-install.sh";
+                    + "U1=https://raw.githubusercontent.com/deekoz2/ValleyServer-arm64/main/install.sh; "
+                    + "U2=https://cdn.jsdelivr.net/gh/deekoz2/ValleyServer-arm64@main/install.sh; "
+                    + "U3=https://ghfast.top/https://raw.githubusercontent.com/deekoz2/ValleyServer-arm64/main/install.sh; "
+                    + "if curl -fsSL --connect-timeout 8 $U1 -o ~/valley-install.sh "
+                    + "|| curl -fsSL --connect-timeout 8 $U2 -o ~/valley-install.sh "
+                    + "|| curl -fsSL --connect-timeout 15 $U3 -o ~/valley-install.sh; "
+                    + "then bash ~/valley-install.sh; else echo 'install.sh 三个下载源都失败，请检查网络'; fi";
 
     static final String ALLOW_CMD =
             "mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties";

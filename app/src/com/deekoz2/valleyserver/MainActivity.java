@@ -2,16 +2,13 @@ package com.deekoz2.valleyserver;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.PendingIntent;
 import android.content.ClipData;
 import android.content.ClipboardManager;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -28,135 +25,105 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
- * 星露谷开服器 —— ValleyServer-arm64 的 Android 前端。
+ * 星露谷开服器 v2.0 —— 完全独立，不再依赖 Termux / tmoe / 安装脚本。
  *
- * 功能：
- *  1. 按 RUN_COMMAND action 动态枚举 Termux 系终端（官方 Termux / ZeroTermux 等 fork）；
- *  2. 通过 RUN_COMMAND + PendingIntent 回执验证 APP ↔ 终端连通性；
- *  3. 一键安装：在前台新会话执行服务器仓库 install.sh（可见、可交互，tmoe 菜单可操作）；
- *  4. 放行助手：复制 allow-external-apps 放行命令 / 直接打开目标终端。
+ * 内置 proot 容器管理：
+ *  ① 初始化：下载 Ubuntu arm64 rootfs（gzip）+ ValleyServer（zip），
+ *     纯 Java 解包，proot 及依赖库由 APK 自带；
+ *  ② 启动/停止服务器：前台服务托管 proot 进程，控制台实时回显；
+ *  ③ 反馈问题：一键提交 GitHub Issue。
  */
-public class MainActivity extends Activity implements ResultReceiver.Callback {
-
-    static final String ACTION_RUN_COMMAND = "com.termux.RUN_COMMAND";
-    static final String EXTRA_PATH = "com.termux.RUN_COMMAND_PATH";
-    static final String EXTRA_ARGS = "com.termux.RUN_COMMAND_ARGUMENTS";
-    static final String EXTRA_BG = "com.termux.RUN_COMMAND_BACKGROUND";
-    static final String EXTRA_PI = "com.termux.RUN_COMMAND_PENDING_INTENT";
-    static final String EXTRA_SESSION_ACTION = "com.termux.RUN_COMMAND_SESSION_ACTION";
-    /** PendingIntent.FLAG_MUTABLE 的数值（编译用 API 30 jar，故用字面量） */
-    static final int FLAG_MUTABLE = 0x02000000;
-
-    static final long TEST_TIMEOUT_MS = 12000;
-
-    static final String INSTALL_URL =
-            "https://raw.githubusercontent.com/deekoz2/ValleyServer-arm64/main/install.sh";
-    static final String INSTALL_CMD =
-            "apt update -y; "
-                    + "DEBIAN_FRONTEND=noninteractive apt upgrade -y -o Dpkg::Options::=--force-confold; "
-                    + "pkg install -y curl openssl; "
-                    + "U1=https://ghfast.top/https://raw.githubusercontent.com/deekoz2/ValleyServer-arm64/main/install.sh; "
-                    + "U2=https://raw.githubusercontent.com/deekoz2/ValleyServer-arm64/main/install.sh; "
-                    + "U3=https://cdn.jsdelivr.net/gh/deekoz2/ValleyServer-arm64@main/install.sh?v=$(date +%s); "
-                    + "if curl -fsSL --connect-timeout 8 $U1 -o ~/valley-install.sh "
-                    + "|| curl -fsSL --connect-timeout 8 $U2 -o ~/valley-install.sh "
-                    + "|| curl -fsSL --connect-timeout 15 $U3 -o ~/valley-install.sh; "
-                    + "then bash ~/valley-install.sh; else echo 'install.sh 三个下载源都失败，请检查网络'; fi";
-
-    static final String ALLOW_CMD =
-            "mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties";
-
-    Handler ui;
-    TextView logView;
-    ScrollView logScroll;
-    LinearLayout cardsBox;
-    final List<TextView> cardStatus = new ArrayList<TextView>();
-    final List<LinearLayout> cardViews = new ArrayList<LinearLayout>();
-    final List<String> pkgs = new ArrayList<String>();
-    final List<String> names = new ArrayList<String>();
-    final List<Boolean> waiting = new ArrayList<Boolean>();
-    final List<String> history = new ArrayList<String>();
-    int selected = 0;
+public class MainActivity extends Activity {
 
     static final String ISSUES_URL = "https://github.com/deekoz2/StarDewOpener/issues/new";
+
+    // rootfs: Ubuntu 22.04.5 base arm64（含 bash/glibc/libstdc++，约 26MB）
+    static final String[] ROOTFS_URLS = {
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
+            "https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
+            "https://ghfast.top/https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
+    };
+    static final long ROOTFS_SIZE = 27671306L;
+
+    // 服务器：ValleyServer v3.0.3 linux-arm64（DSH 修复版，约 448MB）
+    static final String SERVER_ASSET =
+            "https://github.com/deekoz2/ValleyServer-arm64/releases/download/v3.0.3-arm64-dsh/ValleyServer-linux-arm64.zip";
+    static final String[] SERVER_URLS = {
+            "https://ghfast.top/" + SERVER_ASSET,
+            "https://gh-proxy.com/" + SERVER_ASSET,
+            SERVER_ASSET,
+    };
+    static final long SERVER_SIZE = 469458959L;
+
+    static final String[] BIN_ASSETS = { "proot", "loader", "libtalloc.so.2", "libandroid-shmem.so" };
+
+    Handler ui;
+    TextView containerStatus;
+    TextView serverStatus;
+    Button btnInit;
+    Button btnStart;
+    Button btnStop;
+    TextView logView;
+    ScrollView logScroll;
+    final List<String> history = new ArrayList<String>();
+    volatile boolean initBusy;
+
+    File baseDir;
+    File binDir;
+    File dlDir;
+    File rootfsDir;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         ui = new Handler(Looper.getMainLooper());
-        ResultReceiver.cb = this;
-        discoverTerminals();
+        baseDir = getDir("valley", MODE_PRIVATE);
+        binDir = new File(baseDir, "bin");
+        dlDir = new File(baseDir, "dl");
+        rootfsDir = new File(baseDir, "rootfs");
+        binDir.mkdirs();
+        dlDir.mkdirs();
         setContentView(buildUi());
-        refreshCards();
+        refreshStatus();
+        ValleyService.ui = serviceListener();
+        for (String line : ValleyService.logHistory) {
+            append(line);
+        }
+        if (ValleyService.proc != null) {
+            append("（服务器正在运行中）");
+        }
     }
 
     @Override
     protected void onDestroy() {
-        ResultReceiver.cb = null;
+        ValleyService.ui = null;
         super.onDestroy();
     }
 
-    /* ---------------- 终端枚举 ---------------- */
-
-    /** 按 RUN_COMMAND action 枚举所有支持的终端（Termux 及 fork），兜底再加常见包名 */
-    void discoverTerminals() {
-        pkgs.clear();
-        names.clear();
-        PackageManager pm = getPackageManager();
-        List<ResolveInfo> svcs = pm.queryIntentServices(new Intent(ACTION_RUN_COMMAND), 0);
-        for (int i = 0; i < svcs.size(); i++) {
-            String p = svcs.get(i).serviceInfo.packageName;
-            if (pkgs.indexOf(p) < 0 && installed(p)) {
-                pkgs.add(p);
-                names.add(labelOf(p));
+    ValleyService.Listener serviceListener() {
+        return new ValleyService.Listener() {
+            @Override public void onServerLog(String line) { append(line); }
+            @Override public void onServerExit(int code) {
+                append("── 服务器已退出（code=" + code + "）──");
+                refreshStatus();
             }
-        }
-        String[] known = { "com.termux", "com.zerotermux" };
-        for (int i = 0; i < known.length; i++) {
-            if (pkgs.indexOf(known[i]) < 0 && installed(known[i])) {
-                pkgs.add(known[i]);
-                names.add(labelOf(known[i]));
-            }
-        }
-        waiting.clear();
-        for (int i = 0; i < pkgs.size(); i++) {
-            waiting.add(Boolean.FALSE);
-        }
-        if (selected >= pkgs.size()) {
-            selected = 0;
-        }
-    }
-
-    String labelOf(String pkg) {
-        try {
-            PackageManager pm = getPackageManager();
-            CharSequence cs = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0));
-            return cs == null ? pkg : cs.toString();
-        } catch (Exception e) {
-            return pkg;
-        }
-    }
-
-    boolean installed(String pkg) {
-        try {
-            getPackageManager().getPackageInfo(pkg, 0);
-            return true;
-        } catch (PackageManager.NameNotFoundException e) {
-            return false;
-        }
-    }
-
-    String versionOf(String pkg) {
-        try {
-            PackageInfo pi = getPackageManager().getPackageInfo(pkg, 0);
-            return pi.versionName == null ? "?" : pi.versionName;
-        } catch (PackageManager.NameNotFoundException e) {
-            return "?";
-        }
+        };
     }
 
     /* ---------------- 界面 ---------------- */
@@ -168,32 +135,32 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         root.setPadding(dp(20), dp(24), dp(20), dp(16));
 
         root.addView(text("星露谷开服器", 22, 0xFFF8FAFC, Typeface.BOLD));
-        root.addView(text("ValleyServer-arm64 · 无头专用服务器（无需游戏本体）", 12, 0xFF94A3B8, Typeface.NORMAL));
+        root.addView(text("v2.0 · 内置 proot 容器 · 无需 Termux/tmoe", 12, 0xFF94A3B8, Typeface.NORMAL));
         root.addView(gap(14));
 
-        cardsBox = new LinearLayout(this);
-        cardsBox.setOrientation(LinearLayout.VERTICAL);
-        root.addView(cardsBox);
+        LinearLayout card = card();
+        containerStatus = text("容器：检测中…", 14, 0xFFE2E8F0, Typeface.NORMAL);
+        serverStatus = text("服务器：未运行", 14, 0xFFE2E8F0, Typeface.NORMAL);
+        card.addView(containerStatus);
+        card.addView(gap(4));
+        card.addView(serverStatus);
+        root.addView(card);
+        root.addView(gap(12));
 
-        root.addView(gap(4));
-        root.addView(text("点终端卡片可切换「一键安装」目标", 11, 0xFF64748B, Typeface.NORMAL));
+        btnInit = button("① 初始化容器与服务器（首次约 500MB）", 0xFF9A3412, new View.OnClickListener() {
+            @Override public void onClick(View v) { startInit(); }
+        });
+        root.addView(btnInit);
         root.addView(gap(10));
-
-        root.addView(button("1. 检测能否连接终端", 0xFF166534, new View.OnClickListener() {
-            @Override public void onClick(View v) { testConnection(); }
-        }));
+        btnStart = button("② 启动服务器（前台托管，UDP 24642）", 0xFF166534, new View.OnClickListener() {
+            @Override public void onClick(View v) { startServer(); }
+        });
+        root.addView(btnStart);
         root.addView(gap(10));
-        root.addView(button("2. 一键安装开服环境（前台会话，可见）", 0xFF9A3412, new View.OnClickListener() {
-            @Override public void onClick(View v) { oneClickInstall(); }
-        }));
-        root.addView(gap(10));
-        root.addView(button("复制放行命令", 0xFF4C1D95, new View.OnClickListener() {
-            @Override public void onClick(View v) { copyAllowCommand(); }
-        }));
-        root.addView(gap(10));
-        root.addView(button("打开终端", 0xFF1E3A5F, new View.OnClickListener() {
-            @Override public void onClick(View v) { openTerminal(); }
-        }));
+        btnStop = button("③ 停止服务器", 0xFF7F1D1D, new View.OnClickListener() {
+            @Override public void onClick(View v) { ValleyService.stopServer(); }
+        });
+        root.addView(btnStop);
         root.addView(gap(10));
         root.addView(button("反馈问题（提交 GitHub Issue）", 0xFF0F766E, new View.OnClickListener() {
             @Override public void onClick(View v) { feedbackDialog(); }
@@ -204,74 +171,20 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         }));
 
         root.addView(gap(14));
-        root.addView(text("运行日志", 13, 0xFFCBD5E1, Typeface.BOLD));
+        root.addView(text("运行日志 / 服务器控制台", 13, 0xFFCBD5E1, Typeface.BOLD));
         root.addView(gap(6));
         logScroll = new ScrollView(this);
         logView = new TextView(this);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setTextSize(11);
         logView.setTextColor(0xFFA7F3D0);
-        logView.setText("就绪。先检测连接，再一键安装。\n");
+        logView.setText("就绪。\n");
         logScroll.addView(logView);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
         logScroll.setLayoutParams(lp);
         root.addView(logScroll);
         return root;
-    }
-
-    LinearLayout makeCard(final int idx) {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(14), dp(12), dp(14), dp(12));
-        c.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                selected = idx;
-                styleCards();
-                log("→ 一键安装目标已选为 " + names.get(idx) + "（" + pkgs.get(idx) + "）");
-            }
-        });
-        c.addView(text(names.get(idx) + "  ·  " + pkgs.get(idx), 15, 0xFFE2E8F0, Typeface.BOLD));
-        TextView st = text("检测中…", 12, 0xFF94A3B8, Typeface.NORMAL);
-        cardStatus.add(st);
-        c.addView(st);
-        return c;
-    }
-
-    void styleCards() {
-        for (int i = 0; i < cardViews.size(); i++) {
-            GradientDrawable bg = new GradientDrawable();
-            bg.setColor(0xFF121B2C);
-            bg.setCornerRadius(dp(14));
-            if (i == selected) {
-                bg.setStroke(dp(2), 0xFFF59E0B);
-            } else {
-                bg.setStroke(dp(1), 0xFF1E293B);
-            }
-            cardViews.get(i).setBackground(bg);
-        }
-    }
-
-    void refreshCards() {
-        cardStatus.clear();
-        cardViews.clear();
-        cardsBox.removeAllViews();
-        for (int i = 0; i < pkgs.size(); i++) {
-            LinearLayout card = makeCard(i);
-            cardViews.add(card);
-            cardsBox.addView(card);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            if (i > 0) {
-                lp.topMargin = dp(10);
-            }
-            card.setLayoutParams(lp);
-        }
-        styleCards();
-        for (int i = 0; i < pkgs.size(); i++) {
-            cardStatus.get(i).setText("已安装 · v" + versionOf(pkgs.get(i))
-                    + (i == selected ? "  ★ 安装目标" : ""));
-        }
     }
 
     TextView text(String s, int sp, int color, int style) {
@@ -287,6 +200,17 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         LinearLayout v = new LinearLayout(this);
         v.setLayoutParams(new LinearLayout.LayoutParams(1, dp(h)));
         return v;
+    }
+
+    LinearLayout card() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(14), dp(12), dp(14), dp(12));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF121B2C);
+        bg.setCornerRadius(dp(14));
+        c.setBackground(bg);
+        return c;
     }
 
     Button button(String label, int color, View.OnClickListener l) {
@@ -308,136 +232,327 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         return (int) (d * getResources().getDisplayMetrics().density);
     }
 
-    /* ---------------- 连接测试 ---------------- */
+    /* ---------------- 状态 ---------------- */
 
-    void testConnection() {
-        if (pkgs.isEmpty()) {
-            log("✗ 未检测到 Termux 系终端，请先安装 Termux 或 ZeroTermux。");
+    boolean isInitialized() {
+        return new File(rootfsDir, "usr/lib/aarch64-linux-gnu/libc.so.6").exists()
+                && new File(rootfsDir, "opt/valleyserver/ValleyServer").exists();
+    }
+
+    boolean serverRunning() {
+        return ValleyService.proc != null;
+    }
+
+    void refreshStatus() {
+        if (isInitialized()) {
+            containerStatus.setText("容器：就绪（rootfs + 服务器已安装）");
+        } else {
+            containerStatus.setText("容器：未初始化（点 ① 开始下载安装）");
+        }
+        if (serverRunning()) {
+            serverStatus.setText("服务器：运行中（UDP 24642）");
+        } else {
+            serverStatus.setText("服务器：未运行");
+        }
+    }
+
+    /* ---------------- ① 初始化 ---------------- */
+
+    void startInit() {
+        if (initBusy) {
+            log("初始化正在进行中，请稍候…");
             return;
         }
-        for (int i = 0; i < pkgs.size(); i++) {
-            waiting.set(i, Boolean.TRUE);
-            boolean ok = sendCommand(pkgs.get(i),
-                    new String[] { "-c", "echo valley-ok" }, getPi(i), true);
-            if (ok) {
-                log("→ 已向 " + names.get(i) + " 发送测试命令（后台执行，不弹窗口），等待回执…");
-                armTimeout(i);
-            } else {
-                waiting.set(i, Boolean.FALSE);
-            }
-        }
-    }
-
-    void armTimeout(final int i) {
-        ui.postDelayed(new Runnable() {
-            @Override public void run() {
-                if (!waiting.get(i).booleanValue()) {
-                    return;
-                }
-                waiting.set(i, Boolean.FALSE);
-                log("✗ " + names.get(i) + " " + (TEST_TIMEOUT_MS / 1000) + " 秒无回执。排查：");
-                log("   1) 终端侧需放行外部应用：点「复制放行命令」去终端执行后重开终端");
-                log("   2) 保持终端可后台运行（关闭电池优化 / 加白名单）");
-            }
-        }, TEST_TIMEOUT_MS);
-    }
-
-    @Override
-    public void onResult(final int idx, final int err, final int exitCode,
-                         final String stdout, final String stderr, final String errmsg) {
-        ui.post(new Runnable() {
-            @Override public void run() {
-                if (idx < 0 || idx >= pkgs.size() || !waiting.get(idx).booleanValue()) {
-                    return;
-                }
-                waiting.set(idx, Boolean.FALSE);
-                if (err == -1) { // Errno.ERRNO_SUCCESS
-                    log("✓ 连接成功：" + names.get(idx) + " 可正常执行命令，可以一键安装了！");
-                    if (exitCode != Integer.MIN_VALUE && exitCode != 0) {
-                        log("   （命令退出码 " + exitCode + " 非 0，一般不影响）");
-                    }
-                } else if (err == -999) {
-                    log("⚠ " + names.get(idx) + " 有回执但没带结果数据。");
-                    log("   常见原因：终端未放行「外部应用」（命令被拒绝执行，");
-                    log("   终端通知栏应该有报错通知）。请点「复制放行命令」，");
-                    log("   在终端里粘贴执行，完全退出并重开终端后重新检测。");
-                } else {
-                    log("⚠ " + names.get(idx) + " 执行失败：err=" + err);
-                    if (errmsg != null && errmsg.trim().length() > 0) {
-                        log("   " + errmsg.trim().replace("\n", " ⏎ "));
-                    }
-                    if (errmsg != null && errmsg.contains("allow-external-apps")) {
-                        log("   → 终端未放行外部应用。点「复制放行命令」，去终端");
-                        log("     粘贴执行，然后完全退出并重开终端，再回来重新检测。");
-                    }
-                }
-            }
-        });
-    }
-
-    /* ---------------- 一键安装（前台新会话） ---------------- */
-
-    void oneClickInstall() {
-        if (pkgs.isEmpty()) {
-            log("✗ 未检测到 Termux 系终端，无法一键安装。");
+        if (serverRunning()) {
+            log("✗ 请先停止服务器再初始化");
             return;
         }
-        final int i = selected;
-        // 前台 + 会话动作 0 = 新建会话并切到终端界面，脚本与 tmoe 菜单可见可交互
-        boolean ok = sendCommandForeground(pkgs.get(i), new String[] { "-c", INSTALL_CMD });
-        if (ok) {
-            log("→ 已让 " + names.get(i) + " 在【前台新会话】运行安装脚本，");
-            log("  现在切到 " + names.get(i) + " 就能看到进度和 tmoe 菜单。");
-            log("  在菜单里选：新建容器 → Debian → arm64 → proot。");
-            log("  装完在终端里输入 valley 启动服务器（端口 24642/udp）。");
+        initBusy = true;
+        btnInit.setEnabled(false);
+        new Thread() {
+            @Override
+            public void run() {
+                try {
+                    doInit();
+                } catch (final Throwable t) {
+                    log("✗ 初始化失败：" + t);
+                    log("  可点「反馈问题」把日志发给我们");
+                } finally {
+                    initBusy = false;
+                    ui.post(new Runnable() {
+                        @Override public void run() {
+                            btnInit.setEnabled(true);
+                            refreshStatus();
+                        }
+                    });
+                }
+            }
+        }.start();
+    }
+
+    void doInit() throws Exception {
+        log("── 初始化开始 ──");
+        copyBinaries();
+        log("✓ 内置 proot 就绪");
+
+        File rootfsGz = new File(dlDir, "ubuntu-base-arm64.tar.gz");
+        download("rootfs", ROOTFS_URLS, ROOTFS_SIZE, rootfsGz);
+        log("解压 rootfs（1-2 分钟）…");
+        if (rootfsDir.exists()) {
+            deleteRecur(rootfsDir);
         }
-    }
-
-    void showHelp() {
-        log("── 使用说明 ──────────────────────────");
-        log("1. 手机安装 Termux 或 ZeroTermux，打开一次并允许存储权限；");
-        log("2. 点「检测能否连接」：APP 会通过系统 intent 调起终端执行");
-        log("   测试命令并等待回执（后台执行，不弹窗口），验证链路；");
-        log("3. 点「一键安装」：终端会在【前台新会话】里运行 install.sh");
-        log("   （tmoe 创建容器：Debian → arm64 → proot，全程可见可操作）；");
-        log("4. 启动：终端里输入 valley（前台）或 valley start（后台）；");
-        log("5. 联机：同一 Wi-Fi 下好友填 你的IP:24642 ；外网联机需内网穿透");
-        log("   （frp / Tailscale 等）。");
-        log("注：fork 版 ZeroTermux 可能沿用 com.termux 包名，APP 会显示");
-        log("其真实应用名；多终端时点卡片切换安装目标。");
-        log("服务器本体: Lixeer/ValleyServer v3.0.3 (Apache-2.0)");
-        log("──────────────────────────────────────");
-    }
-
-    /* ---------------- 放行辅助 ---------------- */
-
-    void copyAllowCommand() {
+        rootfsDir.mkdirs();
+        FileInputStream fis = new FileInputStream(rootfsGz);
         try {
-            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            cm.setPrimaryClip(ClipData.newPlainText("allow-external-apps", ALLOW_CMD));
-            log("✓ 放行命令已复制到剪贴板：");
-            log("   " + ALLOW_CMD);
-            log("   请点「打开终端」，长按粘贴并回车执行，然后完全退出");
-            log("   （通知栏滑掉/最近任务清掉）重开终端，再回来重新检测。");
-        } catch (Throwable t) {
-            log("✗ 复制失败，请手动在终端里执行上面的命令。");
+            Untar.extractTarGz(fis, rootfsDir, new Untar.Progress() {
+                @Override public void onEntry(int count, String name) {
+                    logThrottle("解压中… " + count + " 项");
+                }
+            });
+        } finally {
+            fis.close();
+        }
+        log("✓ rootfs 解压完成");
+
+        File serverZip = new File(dlDir, "valleyserver.zip");
+        download("服务器", SERVER_URLS, SERVER_SIZE, serverZip);
+        log("解压服务器（约 1-2 分钟）…");
+        File appDir = new File(rootfsDir, "opt/valleyserver");
+        deleteRecur(appDir);
+        appDir.mkdirs();
+        unzip(serverZip, appDir);
+        File elf = new File(appDir, "ValleyServer");
+        if (!elf.isFile()) {
+            throw new Exception("解压后未找到 ValleyServer 可执行文件");
+        }
+        chmodExec(elf);
+        File patch = new File(appDir, "patch-arm64.sh");
+        if (patch.isFile()) {
+            chmodExec(patch);
+        }
+        log("✓ 服务器解压完成");
+
+        log("执行 patch-arm64.sh …");
+        int rc = runInContainer("/bin/sh", "-c", "cd /opt/valleyserver && sh patch-arm64.sh");
+        log("patch 退出码: " + rc);
+
+        log("── 初始化完成！点 ② 启动服务器 ──");
+    }
+
+    void copyBinaries() throws Exception {
+        for (int i = 0; i < BIN_ASSETS.length; i++) {
+            File out = new File(binDir, BIN_ASSETS[i]);
+            if (!out.exists()) {
+                InputStream in = getAssets().open("bin/" + BIN_ASSETS[i]);
+                FileOutputStream fos = new FileOutputStream(out);
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    fos.write(buf, 0, n);
+                }
+                in.close();
+                fos.close();
+            }
+            chmodExec(out);
         }
     }
 
-    void openTerminal() {
-        if (pkgs.isEmpty()) {
-            log("✗ 未检测到 Termux 系终端。");
+    /* ---------------- 下载（镜像 + 断点续传 + 进度） ---------------- */
+
+    void download(final String tag, final String[] urls, final long size, final File out) throws Exception {
+        if (out.isFile() && out.length() == size) {
+            log(tag + " 已存在完整下载，跳过");
             return;
         }
-        Intent li = getPackageManager().getLaunchIntentForPackage(pkgs.get(selected));
-        if (li != null) {
-            li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(li);
-            log("→ 已打开 " + names.get(selected) + "，粘贴放行命令执行后重开它。");
+        for (int i = 0; i < urls.length; i++) {
+            String u = urls[i];
+            log(tag + " 下载源 " + (i + 1) + "/" + urls.length + ": "
+                    + u.replaceFirst("https?://", "").substring(0, Math.min(40, u.replaceFirst("https?://", "").length())) + "…");
+            try {
+                downloadOne(u, size, out);
+                if (out.length() == size) {
+                    log("✓ " + tag + " 下载校验通过（" + size + " 字节）");
+                    return;
+                }
+                log("✗ " + tag + " 大小不符（" + out.length() + " != " + size + "），换源重试");
+                out.delete();
+            } catch (Exception e) {
+                log("✗ " + tag + " 该源失败：" + e.getMessage() + "，换源重试");
+            }
+        }
+        throw new Exception(tag + " 所有下载源均失败");
+    }
+
+    void downloadOne(String url, long total, File out) throws Exception {
+        long have = out.isFile() ? out.length() : 0;
+        if (have > total) {
+            out.delete();
+            have = 0;
+        }
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        if (have > 0) {
+            conn.setRequestProperty("Range", "bytes=" + have + "-");
+        }
+        conn.setInstanceFollowRedirects(true);
+        int code = conn.getResponseCode();
+        if (!(code == 200 || code == 206)) {
+            conn.disconnect();
+            throw new Exception("HTTP " + code);
+        }
+        InputStream in = new BufferedInputStream(conn.getInputStream(), 65536);
+        FileOutputStream fos = new FileOutputStream(out, have > 0 && code == 206);
+        byte[] buf = new byte[65536];
+        long got = have;
+        long lastLog = 0;
+        try {
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                fos.write(buf, 0, n);
+                got += n;
+                if (got - lastLog > Math.max(total / 50, 1048576)) {
+                    lastLog = got;
+                    progressLog(tagOf(url), got, total);
+                }
+            }
+        } finally {
+            fos.close();
+            in.close();
+            conn.disconnect();
         }
     }
 
-    /* ---------------- 反馈问题（GitHub Issue） ---------------- */
+    String tagOf(String url) {
+        String s = url.replaceFirst("https?://", "");
+        return s.substring(0, Math.min(28, s.length()));
+    }
+
+    void progressLog(final String tag, final long done, final long total) {
+        logThrottle(tag + " " + (done * 100 / total) + "% (" + (done >> 20) + "MB/" + (total >> 20) + "MB)");
+    }
+
+    /* ---------------- 工具 ---------------- */
+
+    void unzip(File zip, File destDir) throws Exception {
+        ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(zip), 65536));
+        try {
+            byte[] buf = new byte[65536];
+            ZipEntry e;
+            int count = 0;
+            while ((e = zis.getNextEntry()) != null) {
+                File out = new File(destDir, e.getName());
+                if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath())) {
+                    continue;
+                }
+                if (e.isDirectory()) {
+                    out.mkdirs();
+                    continue;
+                }
+                File pf = out.getParentFile();
+                if (pf != null) {
+                    pf.mkdirs();
+                }
+                FileOutputStream fos = new FileOutputStream(out);
+                int n;
+                while ((n = zis.read(buf)) > 0) {
+                    fos.write(buf, 0, n);
+                }
+                fos.close();
+                count++;
+                if (count % 500 == 0) {
+                    logThrottle("解压服务器… " + count + " 个文件");
+                }
+            }
+        } finally {
+            zis.close();
+        }
+    }
+
+    int runInContainer(String... guestCmd) throws Exception {
+        List<String> cmd = new ArrayList<String>();
+        cmd.add(new File(binDir, "proot").getAbsolutePath());
+        cmd.add("--kill-on-exit");
+        cmd.add("-0");
+        cmd.add("-R");
+        cmd.add(rootfsDir.getAbsolutePath());
+        cmd.add("-b");
+        cmd.add("/dev");
+        cmd.add("-b");
+        cmd.add("/proc");
+        cmd.add("-b");
+        cmd.add("/sys");
+        for (int i = 0; i < guestCmd.length; i++) {
+            cmd.add(guestCmd[i]);
+        }
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.redirectErrorStream(true);
+        applyEnv(pb);
+        Process p = pb.start();
+        BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+        String line;
+        int lines = 0;
+        while ((line = r.readLine()) != null) {
+            if (lines++ < 15) {
+                log("  | " + line);
+            }
+        }
+        return p.waitFor();
+    }
+
+    void applyEnv(ProcessBuilder pb) {
+        Map<String, String> env = pb.environment();
+        env.put("PROOT_LOADER", new File(binDir, "loader").getAbsolutePath());
+        env.put("PROOT_TMP_DIR", new File(baseDir, "tmp").getAbsolutePath());
+        env.put("LD_LIBRARY_PATH", binDir.getAbsolutePath());
+        env.put("HOME", "/root");
+        env.put("TMPDIR", "/tmp");
+        env.put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+    }
+
+    void chmodExec(File f) {
+        try {
+            android.system.Os.chmod(f.getAbsolutePath(), 0755);
+        } catch (Throwable ignore) {
+        }
+    }
+
+    void deleteRecur(File f) {
+        if (f == null || !f.exists()) {
+            return;
+        }
+        File[] kids = f.listFiles();
+        if (kids != null) {
+            for (int i = 0; i < kids.length; i++) {
+                deleteRecur(kids[i]);
+            }
+        }
+        f.delete();
+    }
+
+    /* ---------------- ② 启动 / ③ 停止 ---------------- */
+
+    void startServer() {
+        if (!isInitialized()) {
+            log("✗ 容器未初始化，请先点 ①");
+            return;
+        }
+        if (serverRunning()) {
+            log("服务器已在运行中");
+            return;
+        }
+        Intent i = new Intent(this, ValleyService.class);
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(i);
+        } else {
+            startService(i);
+        }
+        ui.postDelayed(new Runnable() {
+            @Override public void run() { refreshStatus(); }
+        }, 1500);
+    }
+
+    /* ---------------- 反馈问题 ---------------- */
 
     void feedbackDialog() {
         LinearLayout box = new LinearLayout(this);
@@ -447,7 +562,7 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
                 12, 0xFF94A3B8, Typeface.NORMAL));
         box.addView(gap(8));
         final EditText input = new EditText(this);
-        input.setHint("例如：一键安装卡在 tmoe 菜单 / valley 启动报错…");
+        input.setHint("例如：初始化卡住 / 服务器启动报错…");
         input.setMinLines(4);
         input.setGravity(Gravity.TOP);
         input.setTextSize(13);
@@ -499,7 +614,7 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(i);
-            log("→ 已打开浏览器填写 Issue，确认内容后点「Submit new issue」即提交；");
+            log("→ 已打开浏览器填写 Issue，确认后点「Submit new issue」即提交；");
             log("  若浏览器未登录 GitHub，请先登录再回来重新提交一次。");
         } catch (Throwable t) {
             try {
@@ -513,26 +628,24 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         }
     }
 
+    String versionOf(String pkg) {
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(pkg, 0);
+            return pi.versionName == null ? "?" : pi.versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            return "?";
+        }
+    }
+
     String envInfo() {
         StringBuilder sb = new StringBuilder();
         sb.append("- APP: 星露谷开服器 v").append(versionOf(getPackageName()));
         sb.append("\n- Android: ").append(Build.VERSION.RELEASE)
           .append(" (API ").append(Build.VERSION.SDK_INT).append(")");
         sb.append("\n- 设备: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL);
-        sb.append("\n- 检测到终端: ");
-        if (pkgs.isEmpty()) {
-            sb.append("无");
-        } else {
-            for (int i = 0; i < pkgs.size(); i++) {
-                sb.append(names.get(i)).append("(").append(pkgs.get(i))
-                  .append(" v").append(versionOf(pkgs.get(i))).append(")");
-                if (i < pkgs.size() - 1) {
-                    sb.append("、");
-                }
-            }
-        }
-        sb.append("\n- 一键安装目标: ");
-        sb.append(pkgs.isEmpty() ? "无" : names.get(selected) + " (" + pkgs.get(selected) + ")");
+        sb.append("\n- 容器: ").append(isInitialized() ? "已初始化" : "未初始化");
+        sb.append("\n- 服务器: ").append(serverRunning() ? "运行中" : "未运行");
+        sb.append("\n- rootfs: Ubuntu 22.04.5 base arm64（proot 内置容器）");
         return sb.toString();
     }
 
@@ -545,77 +658,27 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         return sb.toString();
     }
 
-    /* ---------------- RUN_COMMAND 发送 ---------------- */
-
-    PendingIntent getPi(int idx) {
-        Intent i = new Intent("com.deekoz2.valleyserver.RESULT");
-        i.setPackage(getPackageName());
-        i.setComponent(new ComponentName(this, ResultReceiver.class));
-        i.putExtra("idx", idx);
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 31) {
-            flags |= FLAG_MUTABLE;
-        }
-        return PendingIntent.getBroadcast(this, idx + 1, i, flags);
-    }
-
-    boolean sendCommand(String pkg, String[] args, PendingIntent pi, boolean bg) {
-        boolean ok = tryStart(buildIntent(pkg, args, pi, bg, true));
-        if (!ok) {
-            log("… 尝试不指定组件再发一次（兼容 fork 版）");
-            ok = tryStart(buildIntent(pkg, args, pi, bg, false));
-        }
-        return ok;
-    }
-
-    boolean sendCommandForeground(String pkg, String[] args) {
-        boolean ok = tryStart(buildIntent(pkg, args, null, false, true));
-        if (!ok) {
-            ok = tryStart(buildIntent(pkg, args, null, false, false));
-        }
-        return ok;
-    }
-
-    Intent buildIntent(String pkg, String[] args, PendingIntent pi, boolean bg, boolean withComponent) {
-        Intent i = new Intent(ACTION_RUN_COMMAND);
-        i.setPackage(pkg);
-        if (withComponent) {
-            i.setComponent(new ComponentName(pkg, pkg + ".app.RunCommandService"));
-        }
-        i.putExtra(EXTRA_PATH, "/data/data/" + pkg + "/files/usr/bin/bash");
-        i.putExtra(EXTRA_ARGS, args);
-        i.putExtra(EXTRA_BG, bg);
-        if (!bg) {
-            // 0 = 新建会话并切换到终端界面（SWITCH_TO_NEW_SESSION_AND_OPEN_ACTIVITY）
-            i.putExtra(EXTRA_SESSION_ACTION, "0");
-        }
-        if (pi != null) {
-            i.putExtra(EXTRA_PI, pi);
-        }
-        return i;
-    }
-
-    boolean tryStart(Intent i) {
-        try {
-            if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(i);
-            } else {
-                startService(i);
-            }
-            return true;
-        } catch (Throwable t) {
-            log("✗ 无法调起 " + i.getPackage() + "：" + t.getClass().getSimpleName());
-            return false;
-        }
+    void showHelp() {
+        log("── 使用说明 ──────────────────────────");
+        log("v2.0 起完全独立，无需 Termux / tmoe / 安装脚本：");
+        log("1. 点 ① 初始化：下载 Ubuntu rootfs（26MB）+ ValleyServer");
+        log("   （448MB，镜像加速 + 断点续传），全部解压到 APP 私有目录；");
+        log("2. 点 ② 启动：内置 proot 拉起无头服务器，通知栏保持运行；");
+        log("3. 好友联机：同一 Wi-Fi 填 你的IP:24642，外网需内网穿透；");
+        log("4. 首次启动生成地图较慢，属正常现象；config.json 可改端口；");
+        log("5. 停止：点 ③（直接结束进程）。");
+        log("内置 proot 来自 Termux 官方仓库（GPL-3.0），源码链接见");
+        log("APP assets 内 LICENSE-binaries.txt。");
+        log("──────────────────────────────────────");
     }
 
     /* ---------------- 日志 ---------------- */
 
-    void log(final String s) {
+    void append(final String s) {
         ui.post(new Runnable() {
             @Override public void run() {
                 history.add(s);
-                if (history.size() > 200) {
+                if (history.size() > 300) {
                     history.remove(0);
                 }
                 logView.append(s + "\n");
@@ -626,5 +689,20 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
                 });
             }
         });
+    }
+
+    long lastThrottle = 0;
+
+    void logThrottle(final String s) {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastThrottle < 700) {
+            return;
+        }
+        lastThrottle = now;
+        append(s);
+    }
+
+    void log(final String s) {
+        append(s);
     }
 }

@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
@@ -21,13 +22,17 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 星露谷开服器 —— ValleyServer-arm64 的 Android 前端。
  *
  * 功能：
- *  1. 检测 Termux / ZeroTermux 是否安装；
- *  2. 通过 Termux RUN_COMMAND 发送测试命令，验证 APP 能否连通 Termux/ZeroTermux；
- *  3. 一键安装：在 Termux 里执行仓库的 install.sh（tmoe 容器 + ValleyServer）。
+ *  1. 按 RUN_COMMAND action 动态枚举 Termux 系终端（官方 Termux / ZeroTermux 等 fork）；
+ *  2. 通过 RUN_COMMAND + PendingIntent 回执验证 APP ↔ 终端连通性；
+ *  3. 一键安装：在前台新会话执行服务器仓库 install.sh（可见、可交互，tmoe 菜单可操作）；
+ *  4. 放行助手：复制 allow-external-apps 放行命令 / 直接打开目标终端。
  */
 public class MainActivity extends Activity implements ResultReceiver.Callback {
 
@@ -36,11 +41,10 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
     static final String EXTRA_ARGS = "com.termux.RUN_COMMAND_ARGUMENTS";
     static final String EXTRA_BG = "com.termux.RUN_COMMAND_BACKGROUND";
     static final String EXTRA_PI = "com.termux.RUN_COMMAND_PENDING_INTENT";
+    static final String EXTRA_SESSION_ACTION = "com.termux.RUN_COMMAND_SESSION_ACTION";
     /** PendingIntent.FLAG_MUTABLE 的数值（编译用 API 30 jar，故用字面量） */
     static final int FLAG_MUTABLE = 0x02000000;
 
-    static final String[] TARGETS = { "com.termux", "com.zerotermux" };
-    static final String[] LABELS = { "Termux", "ZeroTermux" };
     static final long TEST_TIMEOUT_MS = 12000;
 
     static final String INSTALL_URL =
@@ -49,25 +53,93 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
             "apt update -y; apt install -y curl; curl -fsSL " + INSTALL_URL
                     + " -o ~/valley-install.sh && bash ~/valley-install.sh";
 
+    static final String ALLOW_CMD =
+            "mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties";
+
     Handler ui;
     TextView logView;
     ScrollView logScroll;
-    TextView[] statusViews = new TextView[2];
-    boolean[] waiting = new boolean[2];
+    LinearLayout cardsBox;
+    final List<TextView> cardStatus = new ArrayList<TextView>();
+    final List<LinearLayout> cardViews = new ArrayList<LinearLayout>();
+    final List<String> pkgs = new ArrayList<String>();
+    final List<String> names = new ArrayList<String>();
+    final List<Boolean> waiting = new ArrayList<Boolean>();
+    int selected = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         ui = new Handler(Looper.getMainLooper());
         ResultReceiver.cb = this;
+        discoverTerminals();
         setContentView(buildUi());
-        refreshStatus();
+        refreshCards();
     }
 
     @Override
     protected void onDestroy() {
         ResultReceiver.cb = null;
         super.onDestroy();
+    }
+
+    /* ---------------- 终端枚举 ---------------- */
+
+    /** 按 RUN_COMMAND action 枚举所有支持的终端（Termux 及 fork），兜底再加常见包名 */
+    void discoverTerminals() {
+        pkgs.clear();
+        names.clear();
+        PackageManager pm = getPackageManager();
+        List<ResolveInfo> svcs = pm.queryIntentServices(new Intent(ACTION_RUN_COMMAND), 0);
+        for (int i = 0; i < svcs.size(); i++) {
+            String p = svcs.get(i).serviceInfo.packageName;
+            if (pkgs.indexOf(p) < 0 && installed(p)) {
+                pkgs.add(p);
+                names.add(labelOf(p));
+            }
+        }
+        String[] known = { "com.termux", "com.zerotermux" };
+        for (int i = 0; i < known.length; i++) {
+            if (pkgs.indexOf(known[i]) < 0 && installed(known[i])) {
+                pkgs.add(known[i]);
+                names.add(labelOf(known[i]));
+            }
+        }
+        waiting.clear();
+        for (int i = 0; i < pkgs.size(); i++) {
+            waiting.add(Boolean.FALSE);
+        }
+        if (selected >= pkgs.size()) {
+            selected = 0;
+        }
+    }
+
+    String labelOf(String pkg) {
+        try {
+            PackageManager pm = getPackageManager();
+            CharSequence cs = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0));
+            return cs == null ? pkg : cs.toString();
+        } catch (Exception e) {
+            return pkg;
+        }
+    }
+
+    boolean installed(String pkg) {
+        try {
+            getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
+    String versionOf(String pkg) {
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(pkg, 0);
+            return pi.versionName == null ? "?" : pi.versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            return "?";
+        }
     }
 
     /* ---------------- 界面 ---------------- */
@@ -82,21 +154,19 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         root.addView(text("ValleyServer-arm64 · 无头专用服务器（无需游戏本体）", 12, 0xFF94A3B8, Typeface.NORMAL));
         root.addView(gap(14));
 
-        for (int i = 0; i < TARGETS.length; i++) {
-            LinearLayout card = card();
-            card.addView(text(LABELS[i], 15, 0xFFE2E8F0, Typeface.BOLD));
-            statusViews[i] = text("检测中…", 12, 0xFF94A3B8, Typeface.NORMAL);
-            card.addView(statusViews[i]);
-            root.addView(card);
-            root.addView(gap(10));
-        }
-        root.addView(gap(4));
+        cardsBox = new LinearLayout(this);
+        cardsBox.setOrientation(LinearLayout.VERTICAL);
+        root.addView(cardsBox);
 
-        root.addView(button("1. 检测能否连接 Termux / ZeroTermux", 0xFF166534, new View.OnClickListener() {
+        root.addView(gap(4));
+        root.addView(text("点终端卡片可切换「一键安装」目标", 11, 0xFF64748B, Typeface.NORMAL));
+        root.addView(gap(10));
+
+        root.addView(button("1. 检测能否连接终端", 0xFF166534, new View.OnClickListener() {
             @Override public void onClick(View v) { testConnection(); }
         }));
         root.addView(gap(10));
-        root.addView(button("2. 一键安装开服环境", 0xFF9A3412, new View.OnClickListener() {
+        root.addView(button("2. 一键安装开服环境（前台会话，可见）", 0xFF9A3412, new View.OnClickListener() {
             @Override public void onClick(View v) { oneClickInstall(); }
         }));
         root.addView(gap(10));
@@ -104,8 +174,8 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
             @Override public void onClick(View v) { copyAllowCommand(); }
         }));
         root.addView(gap(10));
-        root.addView(button("打开 Termux", 0xFF1E3A5F, new View.OnClickListener() {
-            @Override public void onClick(View v) { openTermux(); }
+        root.addView(button("打开终端", 0xFF1E3A5F, new View.OnClickListener() {
+            @Override public void onClick(View v) { openTerminal(); }
         }));
         root.addView(gap(10));
         root.addView(button("使用说明", 0xFF334155, new View.OnClickListener() {
@@ -129,6 +199,60 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         return root;
     }
 
+    LinearLayout makeCard(final int idx) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(14), dp(12), dp(14), dp(12));
+        c.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                selected = idx;
+                styleCards();
+                log("→ 一键安装目标已选为 " + names.get(idx) + "（" + pkgs.get(idx) + "）");
+            }
+        });
+        c.addView(text(names.get(idx) + "  ·  " + pkgs.get(idx), 15, 0xFFE2E8F0, Typeface.BOLD));
+        TextView st = text("检测中…", 12, 0xFF94A3B8, Typeface.NORMAL);
+        cardStatus.add(st);
+        c.addView(st);
+        return c;
+    }
+
+    void styleCards() {
+        for (int i = 0; i < cardViews.size(); i++) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(0xFF121B2C);
+            bg.setCornerRadius(dp(14));
+            if (i == selected) {
+                bg.setStroke(dp(2), 0xFFF59E0B);
+            } else {
+                bg.setStroke(dp(1), 0xFF1E293B);
+            }
+            cardViews.get(i).setBackground(bg);
+        }
+    }
+
+    void refreshCards() {
+        cardStatus.clear();
+        cardViews.clear();
+        cardsBox.removeAllViews();
+        for (int i = 0; i < pkgs.size(); i++) {
+            LinearLayout card = makeCard(i);
+            cardViews.add(card);
+            cardsBox.addView(card);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            if (i > 0) {
+                lp.topMargin = dp(10);
+            }
+            card.setLayoutParams(lp);
+        }
+        styleCards();
+        for (int i = 0; i < pkgs.size(); i++) {
+            cardStatus.get(i).setText("已安装 · v" + versionOf(pkgs.get(i))
+                    + (i == selected ? "  ★ 安装目标" : ""));
+        }
+    }
+
     TextView text(String s, int sp, int color, int style) {
         TextView t = new TextView(this);
         t.setText(s);
@@ -142,17 +266,6 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         LinearLayout v = new LinearLayout(this);
         v.setLayoutParams(new LinearLayout.LayoutParams(1, dp(h)));
         return v;
-    }
-
-    LinearLayout card() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(14), dp(12), dp(14), dp(12));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xFF121B2C);
-        bg.setCornerRadius(dp(14));
-        c.setBackground(bg);
-        return c;
     }
 
     Button button(String label, int color, View.OnClickListener l) {
@@ -174,68 +287,36 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         return (int) (d * getResources().getDisplayMetrics().density);
     }
 
-    /* ---------------- 状态检测（第 1 层） ---------------- */
-
-    void refreshStatus() {
-        for (int i = 0; i < TARGETS.length; i++) {
-            statusViews[i].setText(describe(TARGETS[i]));
-        }
-    }
-
-    String describe(String pkg) {
-        try {
-            PackageInfo pi = getPackageManager().getPackageInfo(pkg, 0);
-            String v = pi.versionName == null ? "?" : pi.versionName;
-            return "已安装 · v" + v + "  —  可点「检测连接」验证";
-        } catch (PackageManager.NameNotFoundException e) {
-            return "未安装（请先安装 Termux 或 ZeroTermux）";
-        }
-    }
-
-    boolean installed(String pkg) {
-        try {
-            getPackageManager().getPackageInfo(pkg, 0);
-            return true;
-        } catch (PackageManager.NameNotFoundException e) {
-            return false;
-        }
-    }
-
-    /* ---------------- 连接测试（第 2 层） ---------------- */
+    /* ---------------- 连接测试 ---------------- */
 
     void testConnection() {
-        boolean any = false;
-        for (int i = 0; i < TARGETS.length; i++) {
-            if (!installed(TARGETS[i])) {
-                continue;
-            }
-            any = true;
-            waiting[i] = true;
-            boolean ok = sendCommand(TARGETS[i],
+        if (pkgs.isEmpty()) {
+            log("✗ 未检测到 Termux 系终端，请先安装 Termux 或 ZeroTermux。");
+            return;
+        }
+        for (int i = 0; i < pkgs.size(); i++) {
+            waiting.set(i, Boolean.TRUE);
+            boolean ok = sendCommand(pkgs.get(i),
                     new String[] { "-c", "echo valley-ok" }, getPi(i), true);
             if (ok) {
-                log("→ 已向 " + LABELS[i] + " 发送测试命令，等待回执（最长 " + (TEST_TIMEOUT_MS / 1000) + " 秒）…");
+                log("→ 已向 " + names.get(i) + " 发送测试命令（后台执行，不弹窗口），等待回执…");
                 armTimeout(i);
             } else {
-                waiting[i] = false;
+                waiting.set(i, Boolean.FALSE);
             }
-        }
-        if (!any) {
-            log("✗ 未检测到 Termux / ZeroTermux，请先安装其中一个。");
         }
     }
 
     void armTimeout(final int i) {
         ui.postDelayed(new Runnable() {
             @Override public void run() {
-                if (!waiting[i]) {
+                if (!waiting.get(i).booleanValue()) {
                     return;
                 }
-                waiting[i] = false;
-                log("✗ " + LABELS[i] + " " + (TEST_TIMEOUT_MS / 1000) + " 秒无回执。排查：");
-                log("   1) Termux 侧需允许外部应用：~/.termux/termux.properties 里加 allow-external-apps=true 后重启 Termux");
-                log("   2) 保持 Termux 可后台运行（关闭电池优化 / 加白名单）");
-                log("   3) ZeroTermux 若不支持 RUN_COMMAND，请改用原版 Termux");
+                waiting.set(i, Boolean.FALSE);
+                log("✗ " + names.get(i) + " " + (TEST_TIMEOUT_MS / 1000) + " 秒无回执。排查：");
+                log("   1) 终端侧需放行外部应用：点「复制放行命令」去终端执行后重开终端");
+                log("   2) 保持终端可后台运行（关闭电池优化 / 加白名单）");
             }
         }, TEST_TIMEOUT_MS);
     }
@@ -245,72 +326,69 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
                          final String stdout, final String stderr, final String errmsg) {
         ui.post(new Runnable() {
             @Override public void run() {
-                if (idx < 0 || idx >= TARGETS.length || !waiting[idx]) {
+                if (idx < 0 || idx >= pkgs.size() || !waiting.get(idx).booleanValue()) {
                     return;
                 }
-                waiting[idx] = false;
+                waiting.set(idx, Boolean.FALSE);
                 if (err == -1) { // Errno.ERRNO_SUCCESS
-                    log("✓ 连接成功：" + LABELS[idx] + " 可正常执行命令，可以一键安装了！");
+                    log("✓ 连接成功：" + names.get(idx) + " 可正常执行命令，可以一键安装了！");
                     if (exitCode != Integer.MIN_VALUE && exitCode != 0) {
                         log("   （命令退出码 " + exitCode + " 非 0，一般不影响）");
                     }
                 } else if (err == -999) {
-                    log("⚠ " + LABELS[idx] + " 有回执但没带结果数据。");
-                    log("   常见原因：Termux 未放行「外部应用」（命令被拒绝执行，");
-                    log("   Termux 通知栏应该有报错通知）。请点「复制放行命令」，");
-                    log("   在 Termux 里粘贴执行，完全退出并重开 Termux 后重新检测。");
+                    log("⚠ " + names.get(idx) + " 有回执但没带结果数据。");
+                    log("   常见原因：终端未放行「外部应用」（命令被拒绝执行，");
+                    log("   终端通知栏应该有报错通知）。请点「复制放行命令」，");
+                    log("   在终端里粘贴执行，完全退出并重开终端后重新检测。");
                 } else {
-                    log("⚠ " + LABELS[idx] + " 执行失败：err=" + err);
+                    log("⚠ " + names.get(idx) + " 执行失败：err=" + err);
                     if (errmsg != null && errmsg.trim().length() > 0) {
                         log("   " + errmsg.trim().replace("\n", " ⏎ "));
                     }
                     if (errmsg != null && errmsg.contains("allow-external-apps")) {
-                        log("   → Termux 未放行外部应用。点「复制放行命令」，去 Termux");
-                        log("     粘贴执行，然后完全退出并重开 Termux，再回来重新检测。");
+                        log("   → 终端未放行外部应用。点「复制放行命令」，去终端");
+                        log("     粘贴执行，然后完全退出并重开终端，再回来重新检测。");
                     }
                 }
             }
         });
     }
 
-    /* ---------------- 一键安装 ---------------- */
+    /* ---------------- 一键安装（前台新会话） ---------------- */
 
     void oneClickInstall() {
-        for (int i = 0; i < TARGETS.length; i++) {
-            if (!installed(TARGETS[i])) {
-                continue;
-            }
-            boolean ok = sendCommand(TARGETS[i], new String[] { "-c", INSTALL_CMD }, null, true);
-            if (ok) {
-                log("→ 已把一键安装脚本发往 " + LABELS[i] + "。请打开 Termux 看进度：");
-                log("   脚本会调用 tmoe 创建 proot 容器（在 tmoe 菜单里选 Debian → arm64 → proot），");
-                log("   然后下载 ValleyServer v3.0.3 linux-arm64（约 448MB）并部署。");
-                log("   装完在 Termux 里输入 valley 启动服务器（默认端口 24642/udp）。");
-                return;
-            }
+        if (pkgs.isEmpty()) {
+            log("✗ 未检测到 Termux 系终端，无法一键安装。");
+            return;
         }
-        log("✗ 未检测到 Termux / ZeroTermux，无法一键安装。");
+        final int i = selected;
+        // 前台 + 会话动作 0 = 新建会话并切到终端界面，脚本与 tmoe 菜单可见可交互
+        boolean ok = sendCommandForeground(pkgs.get(i), new String[] { "-c", INSTALL_CMD });
+        if (ok) {
+            log("→ 已让 " + names.get(i) + " 在【前台新会话】运行安装脚本，");
+            log("  现在切到 " + names.get(i) + " 就能看到进度和 tmoe 菜单。");
+            log("  在菜单里选：新建容器 → Debian → arm64 → proot。");
+            log("  装完在终端里输入 valley 启动服务器（端口 24642/udp）。");
+        }
     }
 
     void showHelp() {
         log("── 使用说明 ──────────────────────────");
         log("1. 手机安装 Termux 或 ZeroTermux，打开一次并允许存储权限；");
-        log("2. 点「检测连接」：本 APP 会通过系统 intent 调起 Termux 执行一条");
-        log("   测试命令并等待回执，验证链路是否通畅；");
-        log("3. 点「一键安装」：在 Termux 里执行 install.sh（使用 tmoe 创建");
-        log("   proot 容器，部署 ValleyServer 无头服务器）；");
-        log("4. 启动：Termux 里输入 valley（前台）或 valley start（后台）；");
+        log("2. 点「检测能否连接」：APP 会通过系统 intent 调起终端执行");
+        log("   测试命令并等待回执（后台执行，不弹窗口），验证链路；");
+        log("3. 点「一键安装」：终端会在【前台新会话】里运行 install.sh");
+        log("   （tmoe 创建容器：Debian → arm64 → proot，全程可见可操作）；");
+        log("4. 启动：终端里输入 valley（前台）或 valley start（后台）；");
         log("5. 联机：同一 Wi-Fi 下好友填 你的IP:24642 ；外网联机需内网穿透");
         log("   （frp / Tailscale 等）。");
-        log("服务器本体: Lixeer/ValleyServer v3.0.3 (Apache-2.0)，本仓库为");
-        log("linux-arm64 DSH 修复版。Apache-2.0 © deekoz2");
+        log("注：fork 版 ZeroTermux 可能沿用 com.termux 包名，APP 会显示");
+        log("其真实应用名；多终端时点卡片切换安装目标。");
+        log("服务器本体: Lixeer/ValleyServer v3.0.3 (Apache-2.0)");
         log("──────────────────────────────────────");
     }
 
     /* ---------------- 放行辅助 ---------------- */
-
-    static final String ALLOW_CMD =
-            "mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties";
 
     void copyAllowCommand() {
         try {
@@ -318,27 +396,24 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
             cm.setPrimaryClip(ClipData.newPlainText("allow-external-apps", ALLOW_CMD));
             log("✓ 放行命令已复制到剪贴板：");
             log("   " + ALLOW_CMD);
-            log("   请点「打开 Termux」，长按粘贴并回车执行，然后完全退出");
-            log("   （通知栏滑掉/最近任务清掉）重开 Termux，再回来重新检测。");
+            log("   请点「打开终端」，长按粘贴并回车执行，然后完全退出");
+            log("   （通知栏滑掉/最近任务清掉）重开终端，再回来重新检测。");
         } catch (Throwable t) {
-            log("✗ 复制失败，请手动在 Termux 里执行上面的命令。");
+            log("✗ 复制失败，请手动在终端里执行上面的命令。");
         }
     }
 
-    void openTermux() {
-        for (int i = 0; i < TARGETS.length; i++) {
-            if (!installed(TARGETS[i])) {
-                continue;
-            }
-            Intent li = getPackageManager().getLaunchIntentForPackage(TARGETS[i]);
-            if (li != null) {
-                li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(li);
-                log("→ 已打开 " + LABELS[i] + "，粘贴放行命令执行后重开它。");
-                return;
-            }
+    void openTerminal() {
+        if (pkgs.isEmpty()) {
+            log("✗ 未检测到 Termux 系终端。");
+            return;
         }
-        log("✗ 未检测到 Termux / ZeroTermux。");
+        Intent li = getPackageManager().getLaunchIntentForPackage(pkgs.get(selected));
+        if (li != null) {
+            li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(li);
+            log("→ 已打开 " + names.get(selected) + "，粘贴放行命令执行后重开它。");
+        }
     }
 
     /* ---------------- RUN_COMMAND 发送 ---------------- */
@@ -364,6 +439,14 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         return ok;
     }
 
+    boolean sendCommandForeground(String pkg, String[] args) {
+        boolean ok = tryStart(buildIntent(pkg, args, null, false, true));
+        if (!ok) {
+            ok = tryStart(buildIntent(pkg, args, null, false, false));
+        }
+        return ok;
+    }
+
     Intent buildIntent(String pkg, String[] args, PendingIntent pi, boolean bg, boolean withComponent) {
         Intent i = new Intent(ACTION_RUN_COMMAND);
         i.setPackage(pkg);
@@ -373,6 +456,10 @@ public class MainActivity extends Activity implements ResultReceiver.Callback {
         i.putExtra(EXTRA_PATH, "/data/data/" + pkg + "/files/usr/bin/bash");
         i.putExtra(EXTRA_ARGS, args);
         i.putExtra(EXTRA_BG, bg);
+        if (!bg) {
+            // 0 = 新建会话并切换到终端界面（SWITCH_TO_NEW_SESSION_AND_OPEN_ACTIVITY）
+            i.putExtra(EXTRA_SESSION_ACTION, "0");
+        }
         if (pi != null) {
             i.putExtra(EXTRA_PI, pi);
         }

@@ -554,6 +554,7 @@ public class MainActivity extends Activity {
     }
 
     int runInContainer(String... guestCmd) throws Exception {
+        new File(baseDir, "tmp").mkdirs();
         List<String> cmd = new ArrayList<String>();
         cmd.add(new File(binDir, "proot").getAbsolutePath());
         cmd.add("--kill-on-exit");
@@ -592,6 +593,8 @@ public class MainActivity extends Activity {
         env.put("HOME", "/root");
         env.put("TMPDIR", "/tmp");
         env.put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        // ubuntu-base 无 libicu：开启 .NET 不变文化模式（对游戏服务器无影响）
+        env.put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
     }
 
     void chmodExec(File f) {

@@ -139,7 +139,8 @@ public class MainActivity extends Activity {
         root.setPadding(dp(20), dp(24), dp(20), dp(16));
 
         root.addView(text("星露谷开服器", 22, 0xFFF8FAFC, Typeface.BOLD));
-        root.addView(text("v2.0 · 内置 proot 容器 · 无需 Termux/tmoe", 12, 0xFF94A3B8, Typeface.NORMAL));
+        root.addView(text("v" + versionOf(getPackageName()) + " · 内置 proot 容器 · 无需 Termux/tmoe",
+                12, 0xFF94A3B8, Typeface.NORMAL));
         root.addView(gap(14));
 
         LinearLayout card = card();
@@ -365,11 +366,8 @@ public class MainActivity extends Activity {
         if (patch.isFile()) {
             chmodExec(patch);
         }
+        // 注：patch-arm64.sh 面向源码树（找 publish/ 目录），release 包无需执行，故跳过
         log("✓ 服务器解压完成");
-
-        log("执行 patch-arm64.sh …");
-        int rc = runInContainer("/bin/sh", "-c", "cd /opt/valleyserver && sh patch-arm64.sh");
-        log("patch 退出码: " + rc);
 
         log("── 初始化完成！点 ② 启动服务器 ──");
     }

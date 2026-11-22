@@ -103,6 +103,8 @@ public class ValleyService extends Service {
             env.put("HOME", "/root");
             env.put("TMPDIR", "/tmp");
             env.put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+            // ubuntu-base 无 libicu：开启 .NET 不变文化模式（对游戏服务器无影响）
+            env.put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
 
             proc = pb.start();
             append("✓ 服务器进程已启动（UDP 24642，控制台输出见下）");

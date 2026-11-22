@@ -366,6 +366,13 @@ public class MainActivity extends Activity {
         if (patch.isFile()) {
             chmodExec(patch);
         }
+        // 修复：release 包误带 x86_64 版 liblwjgl_lz4.so，用内置的 arm64 版覆盖
+        //（LWJGL 3.3.3 natives-linux-arm64，JNI 符号与游戏所需完全一致）
+        File lz4 = new File(appDir, "liblwjgl_lz4.so");
+        if (lz4.exists()) {
+            copyAsset("bin/liblwjgl_lz4.so", lz4);
+            log("✓ 已替换为 arm64 版 liblwjgl_lz4.so");
+        }
         // 注：patch-arm64.sh 面向源码树（找 publish/ 目录），release 包无需执行，故跳过
         log("✓ 服务器解压完成");
 
@@ -375,19 +382,21 @@ public class MainActivity extends Activity {
     void copyBinaries() throws Exception {
         for (int i = 0; i < BIN_ASSETS.length; i++) {
             File out = new File(binDir, BIN_ASSETS[i]);
-            if (!out.exists()) {
-                InputStream in = getAssets().open("bin/" + BIN_ASSETS[i]);
-                FileOutputStream fos = new FileOutputStream(out);
-                byte[] buf = new byte[65536];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    fos.write(buf, 0, n);
-                }
-                in.close();
-                fos.close();
-            }
+            copyAsset("bin/" + BIN_ASSETS[i], out);
             chmodExec(out);
         }
+    }
+
+    void copyAsset(String assetPath, File out) throws Exception {
+        InputStream in = getAssets().open(assetPath);
+        FileOutputStream fos = new FileOutputStream(out);
+        byte[] buf = new byte[65536];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            fos.write(buf, 0, n);
+        }
+        in.close();
+        fos.close();
     }
 
     /* ---------------- 下载（镜像 + 断点续传 + 进度） ---------------- */

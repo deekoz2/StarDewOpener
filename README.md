@@ -6,10 +6,10 @@
 
 ## 功能
 
-- 🔍 **检测安装状态**：通过 PackageManager 检测 `com.termux` / `com.zerotermux` 是否安装（含版本号）
-- 📶 **连通性测试**：通过 Termux `RUN_COMMAND` intent 下发测试命令，用 PendingIntent 回执验证链路（按官方 v0.118.0 result-bundle 协议解析：`err=-1` 成功，失败显示 errmsg 并给出对应指引）
-- ⚡ **一键安装**：调起 Termux 执行服务器仓库的 `install.sh`（tmoe proot 容器 + ValleyServer）
-- 📋 **放行助手**：「复制放行命令」+「打开 Termux」，快速完成 `allow-external-apps=true` 放行
+- 🔍 **检测安装状态**：按 `RUN_COMMAND` action 动态枚举 Termux 系终端（官方 Termux / ZeroTermux 等 fork，显示真实应用名；fork 可能沿用 `com.termux` 包名）
+- 📶 **连通性测试**：通过 Termux `RUN_COMMAND` intent 后台下发测试命令，用 PendingIntent 回执验证链路（按官方 v0.118.0 result-bundle 协议解析：`err=-1` 成功，失败显示 errmsg 并给出对应指引）
+- ⚡ **一键安装**：在**前台新会话**执行服务器仓库的 `install.sh`（自动切到终端界面，进度与 tmoe 菜单全程可见可操作）；多终端时点卡片切换安装目标
+- 📋 **放行助手**：「复制放行命令」+「打开终端」，快速完成 `allow-external-apps=true` 放行
 
 ## 安装
 
@@ -39,10 +39,11 @@ cd app && SDK_JAR=/tmp/android.jar bash build.sh
 
 ## 使用流程
 
-1. 打开 APP → 确认 Termux 状态为「已安装」；
+1. 打开 APP → 确认终端卡片显示「已安装」（点卡片可切换安装目标）；
 2. 点「检测能否连接」→ 看到「✓ 连接成功」；
    - 若失败，按日志提示放行（APP 按钮一键复制命令）后重测；
-3. 点「一键安装开服环境」→ 跟随 tmoe 菜单选 `Debian → arm64 → proot`，等待部署完成；
+3. 点「一键安装开服环境」→ 终端自动弹出到前台新会话运行脚本，
+   在 tmoe 菜单选 `Debian → arm64 → proot`，等待部署完成；
 4. Termux 里 `valley` 启动服务器（端口 24642/udp）。
 
 ## 实现说明

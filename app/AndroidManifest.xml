@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.deekoz2.valleyserver">
-    <!-- Termux RUN_COMMAND 服务受该自定义权限保护，必须声明 -->
-    <uses-permission android:name="com.termux.permission.RUN_COMMAND"/>
+    <!-- APP 自己下载 rootfs 与服务器（内置容器方案） -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- 前台服务保持服务器运行 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <application
         android:label="星露谷开服器"
         android:allowBackup="false"
@@ -15,8 +17,8 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <receiver
-            android:name=".ResultReceiver"
-            android:exported="true"/>
+        <service
+            android:name=".ValleyService"
+            android:exported="false"/>
     </application>
 </manifest>

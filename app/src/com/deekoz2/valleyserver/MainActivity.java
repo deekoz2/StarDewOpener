@@ -341,6 +341,21 @@ public class MainActivity extends Activity {
         deleteRecur(appDir);
         appDir.mkdirs();
         unzip(serverZip, appDir);
+        // zip 内有一层 ValleyServer-linux-arm64/ 目录，把内容上移
+        File inner = new File(appDir, "ValleyServer-linux-arm64");
+        if (inner.isDirectory()) {
+            File[] kids = inner.listFiles();
+            if (kids != null) {
+                for (int i = 0; i < kids.length; i++) {
+                    File dst = new File(appDir, kids[i].getName());
+                    if (!kids[i].renameTo(dst)) {
+                        copyTree(kids[i], dst);
+                        deleteRecur(kids[i]);
+                    }
+                }
+            }
+            inner.delete();
+        }
         File elf = new File(appDir, "ValleyServer");
         if (!elf.isFile()) {
             throw new Exception("解压后未找到 ValleyServer 可执行文件");
@@ -597,6 +612,28 @@ public class MainActivity extends Activity {
             }
         }
         f.delete();
+    }
+
+    void copyTree(File src, File dst) throws Exception {
+        if (src.isDirectory()) {
+            dst.mkdirs();
+            File[] kids = src.listFiles();
+            if (kids != null) {
+                for (int i = 0; i < kids.length; i++) {
+                    copyTree(kids[i], new File(dst, kids[i].getName()));
+                }
+            }
+        } else {
+            FileInputStream fis = new FileInputStream(src);
+            FileOutputStream fos = new FileOutputStream(dst);
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = fis.read(buf)) > 0) {
+                fos.write(buf, 0, n);
+            }
+            fis.close();
+            fos.close();
+        }
     }
 
     /* ---------------- ② 启动 / ③ 停止 ---------------- */

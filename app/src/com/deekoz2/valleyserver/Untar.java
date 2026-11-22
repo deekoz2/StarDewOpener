@@ -53,16 +53,18 @@ public class Untar {
             if ("L".equals(type)) {                 // GNU 长文件名
                 byte[] buf = new byte[(int) size];
                 readFully(in, buf);
+                skipPad(in, size);                  // 数据按 512 对齐，必须跳过填充
                 longName = cstr(buf);
                 continue;
             }
             if ("K".equals(type)) {                 // GNU 长链接名（忽略）
-                skip(in, size);
+                skipData(in, size);
                 continue;
             }
             if ("x".equals(type) || "g".equals(type)) { // pax 头
                 byte[] buf = new byte[(int) size];
                 readFully(in, buf);
+                skipPad(in, size);
                 if ("x".equals(type)) {
                     parsePax(buf, pax);
                 }
@@ -132,6 +134,17 @@ public class Untar {
                 cb.onEntry(count, name);
             }
         }
+    }
+
+    /** tar 数据块按 512 字节对齐：跳过 size 后的填充 */
+    static void skipPad(InputStream in, long size) throws IOException {
+        skip(in, (512 - (size % 512)) % 512);
+    }
+
+    /** 跳过一段数据 + 对齐填充（用于 K/x/g 等元数据段） */
+    static void skipData(InputStream in, long size) throws IOException {
+        skip(in, size);
+        skipPad(in, size);
     }
 
     static boolean readFully(InputStream in, byte[] buf) throws IOException {

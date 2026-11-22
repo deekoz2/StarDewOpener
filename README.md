@@ -1,22 +1,36 @@
 # StarDewOpener · 星露谷开服器
 
-**ValleyServer-arm64 的 Android 前端 APP**：在手机上检测 Termux / ZeroTermux、验证连通性、一键部署星露谷物语无头专用服务器。
+**ValleyServer-arm64 的 Android 前端 APP：内置 proot 容器，完全独立运行，无需 Termux / tmoe / 安装脚本。**
 
 配套服务器仓库：[deekoz2/ValleyServer-arm64](https://github.com/deekoz2/ValleyServer-arm64)（ValleyServer v3.0.3 linux-arm64 DSH 修复版，上游 [Lixeer/ValleyServer](https://github.com/Lixeer/ValleyServer)）。
 
-## 功能
+## v2.0 · 内置容器版
 
-- 🔍 **检测安装状态**：按 `RUN_COMMAND` action 动态枚举 Termux 系终端（官方 Termux / ZeroTermux 等 fork，显示真实应用名；fork 可能沿用 `com.termux` 包名）
-- 📶 **连通性测试**：通过 Termux `RUN_COMMAND` intent 后台下发测试命令，用 PendingIntent 回执验证链路（按官方 v0.118.0 result-bundle 协议解析：`err=-1` 成功，失败显示 errmsg 并给出对应指引）
-- ⚡ **一键安装**：在**前台新会话**执行服务器仓库的 `install.sh`（自动切到终端界面，进度与 tmoe 菜单全程可见可操作）；多终端时点卡片切换安装目标
-- 📋 **放行助手**：「复制放行命令」+「打开终端」，快速完成 `allow-external-apps=true` 放行
-- 💬 **反馈问题**：填写描述后一键提交为 GitHub Issue（自动附带 APP 版本、Android 版本、设备型号、检测到的终端与最近运行日志）
+```
+下载 rootfs(Ubuntu 26MB) + ValleyServer(448MB, 镜像加速/断点续传)
+        │  纯 Java 解包（tar.gz + zip），落盘 APP 私有目录
+        ▼
+内置 proot（Termux 官方构建）拉起无头服务器，前台服务托管，控制台实时回显
+```
 
-## 安装
+- ✅ **不再需要 Termux / ZeroTermux / tmoe**，装 APP 就能开服
+- ✅ **取消一键安装指令**：初始化、解压、启动全部在 APP 内完成
+- ✅ 下载带镜像回退（TUNA / cdimage / ghfast）+ 字节校验 + 断点续传
+- ✅ 服务器以前台服务运行，通知栏常驻，APP 退到后台不中断
+- ✅ 反馈问题：一键提交 GitHub Issue（自动附带环境信息与日志）
 
-从 [Releases](https://github.com/deekoz2/StarDewOpener/releases) 下载 `valley-launcher.apk` 安装。
+## 安装与使用
 
-或自行构建（无需 Android Studio，支持在手机 Termux/Ubuntu 上构建）：
+1. 从 [Releases](https://github.com/deekoz2/StarDewOpener/releases) 下载 `valley-launcher.apk` 安装（Android 8.0+，需约 2GB 可用存储）；
+2. 打开 APP → 点 **① 初始化容器与服务器**（首次约 500MB 下载，耐心等待）；
+3. 点 **② 启动服务器** → 控制台实时输出，通知栏显示运行中；
+4. 好友联机：同一 Wi-Fi 填 `你的IP:24642`（APP 内 `valley ip` 已移除，可用路由器后台或 `valley ip` 的 Termux 替代方案查看）；外网联机需 frp / Tailscale 等内网穿透；
+5. 停止：点 **③ 停止服务器**。
+
+> 端口修改：初始化后 `config.json` 位于 APP 私有目录
+> `/data/data/com.deekoz2.valleyserver/app_valley/rootfs/opt/valleyserver/`，后续版本会提供界面化配置。
+
+## 自己构建（无需 Android Studio）
 
 ```sh
 apt install openjdk-17-jdk-headless aapt dalvik-exchange apksigner zip
@@ -26,35 +40,18 @@ cd app && SDK_JAR=/tmp/android.jar bash build.sh
 # 产物: app/build/valley-launcher.apk
 ```
 
-## 前置条件（Termux 侧）
+内置的 `proot`/`loader`/`libtalloc`/`libandroid-shmem` 来自 Termux 官方软件仓库（GPL-3.0），来源与源码链接见 `app/assets/bin/LICENSE-binaries.txt`。targetSdk 28（与 Termux 相同的原因：允许在应用私有目录执行文件）。
 
-1. 已安装 Termux（或 ZeroTermux），打开过一次；
-2. 放行外部应用（APP 里有「复制放行命令」按钮，或手动执行）：
+## 技术实现
 
-   ```sh
-   mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties
-   ```
-
-   然后完全退出并重开 Termux；
-3. 保持 Termux 可后台运行（关闭电池优化 / 后台清理白名单）。
-
-## 使用流程
-
-1. 打开 APP → 确认终端卡片显示「已安装」（点卡片可切换安装目标）；
-2. 点「检测能否连接」→ 看到「✓ 连接成功」；
-   - 若失败，按日志提示放行（APP 按钮一键复制命令）后重测；
-3. 点「一键安装开服环境」→ 终端自动弹出到前台新会话运行脚本，
-   在 tmoe 菜单选 `Debian → arm64 → proot`，等待部署完成；
-4. Termux 里 `valley` 启动服务器（端口 24642/udp）。
-
-## 实现说明
-
-- minSdk 24 / targetSdk 30，单 Activity，程序化 UI，零第三方依赖（APK 约 17KB）；
-- 清单声明 `com.termux.permission.RUN_COMMAND`（否则调起 Termux 服务会 SecurityException）；
-- 回执解析遵循官方协议：广播携带 `result` Bundle（`err` / `exitCode` / `stdout` / `stderr` / `errmsg`），
-  兼容不回传 stdout 的 fork 版本（`err=-1` 即视为连通）；
-- 兼容 Termux 与 ZeroTermux（fork 包名不同但保持同一 service/action）。
+- **容器管理**：`proot -0 -R rootfs -b /dev,/proc,/sys -w /opt/valleyserver ValleyServer`
+- **rootfs**：Ubuntu 22.04.5 base arm64（含 bash / glibc / libstdc++，.NET 运行时所需齐全）
+- **解包**：纯 Java 实现 tar.gz（支持 ustar/GNU 长名/pax/符号链接，权限用 `Os.chmod` 还原）+ `java.util.zip` 解 zip
+- **进程托管**：前台 Service 持有 proot 进程，stdout/stderr 合流回显到界面
 
 ## 许可
 
-Apache-2.0（服务器本体 [Lixeer/ValleyServer](https://github.com/Lixeer/ValleyServer) 同为 Apache-2.0）。如果你喜欢星露谷物语，请支持正版。
+- APP：Apache-2.0
+- 内置二进制：proot 等遵循 GPL-3.0（来源与源码链接见 `app/assets/bin/LICENSE-binaries.txt`）
+- 服务器本体：[Lixeer/ValleyServer](https://github.com/Lixeer/ValleyServer)（Apache-2.0）
+- 如果你喜欢星露谷物语，请支持正版。

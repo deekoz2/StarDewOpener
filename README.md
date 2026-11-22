@@ -10,6 +10,7 @@
 - 📶 **连通性测试**：通过 Termux `RUN_COMMAND` intent 后台下发测试命令，用 PendingIntent 回执验证链路（按官方 v0.118.0 result-bundle 协议解析：`err=-1` 成功，失败显示 errmsg 并给出对应指引）
 - ⚡ **一键安装**：在**前台新会话**执行服务器仓库的 `install.sh`（自动切到终端界面，进度与 tmoe 菜单全程可见可操作）；多终端时点卡片切换安装目标
 - 📋 **放行助手**：「复制放行命令」+「打开终端」，快速完成 `allow-external-apps=true` 放行
+- 💬 **反馈问题**：填写描述后一键提交为 GitHub Issue（自动附带 APP 版本、Android 版本、设备型号、检测到的终端与最近运行日志）
 
 ## 安装
 

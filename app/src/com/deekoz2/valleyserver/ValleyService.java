@@ -171,13 +171,90 @@ public class ValleyService extends Service {
         }
     }
 
-    /** 停止服务器（SIGTERM） */
+    /** 停止服务器：先 SIGTERM，2.5 秒后仍活着就按名 SIGKILL（同 uid 允许） */
     public static void stopServer() {
-        Process p = proc;
-        if (p != null) {
-            p.destroy();
-        } else {
+        if (proc == null) {
             append("没有在运行的服务器");
+            return;
         }
+        append("正在停止服务器…");
+        try {
+            proc.destroy();
+        } catch (Throwable ignore) {
+        }
+        new Thread() {
+            @Override
+            public void run() {
+                try {
+                    Thread.sleep(2500);
+                } catch (InterruptedException ignore) {
+                }
+                if (proc != null) {
+                    append("进程未响应，强制结束…");
+                }
+                killByName("ValleyServer");
+                killByName("proot");
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignore) {
+                }
+                Process q = proc;
+                if (q != null) {
+                    try {
+                        if (Build.VERSION.SDK_INT >= 26) {
+                            q.destroyForcibly();
+                        } else {
+                            q.destroy();
+                        }
+                    } catch (Throwable ignore) {
+                    }
+                }
+            }
+        }.start();
+    }
+
+    /** 杀死 cmdline 含指定关键字的同 uid 进程（/proc 扫描） */
+    static void killByName(String needle) {
+        File[] dirs = new File("/proc").listFiles();
+        if (dirs == null) {
+            return;
+        }
+        int self = android.os.Process.myPid();
+        for (int i = 0; i < dirs.length; i++) {
+            String n = dirs[i].getName();
+            boolean digits = n.length() > 0;
+            for (int j = 0; j < n.length(); j++) {
+                if (n.charAt(j) < '0' || n.charAt(j) > '9') {
+                    digits = false;
+                    break;
+                }
+            }
+            if (!digits) {
+                continue;
+            }
+            int pid = Integer.parseInt(n);
+            if (pid == self) {
+                continue;
+            }
+            try {
+                String cmd = new String(readFile(new File(dirs[i], "cmdline")))
+                        .replace('\0', ' ').trim();
+                if (cmd.contains(needle)) {
+                    android.system.Os.kill(pid, android.system.OsConstants.SIGKILL);
+                    append("已 SIGKILL " + pid + " (" + needle + ")");
+                }
+            } catch (Throwable ignore) {
+            }
+        }
+    }
+
+    static byte[] readFile(File f) throws Exception {
+        FileInputStream fis = new FileInputStream(f);
+        byte[] buf = new byte[4096];
+        int n = fis.read(buf);
+        fis.close();
+        byte[] out = new byte[Math.max(n, 0)];
+        System.arraycopy(buf, 0, out, 0, out.length);
+        return out;
     }
 }

@@ -299,6 +299,22 @@ public class MainActivity extends Activity {
         copyBinaries();
         log("✓ 内置 proot 就绪");
 
+        // 网络自检（每个探测硬超时 8 秒，DNS 卡死也不会拖住）
+        log("网络自检中…");
+        String b = probe("https://www.baidu.com");
+        String a = probe("https://mirrors.aliyun.com");
+        String g = probe("https://github.com");
+        log("百度=" + b + "  阿里云=" + a + "  GitHub=" + g);
+        if (!b.equals("200") && !b.equals("301") && !b.equals("302")) {
+            log("✗ 设备无法联网：这台平板很可能限制了本 APP 的网络（学生模式/家长控制）");
+            log("  请到 平板设置 → 应用管理 或 学生模式 → 星露谷开服器 → 允许联网/关闭限制，");
+            log("  然后完全退出本 APP 重新打开再点 ①");
+            throw new Exception("设备网络受限（百度不通=" + b + "）");
+        }
+        if (!a.equals("200")) {
+            log("⚠ 阿里云镜像不通（" + a + "），将自动尝试其它镜像");
+        }
+
         File rootfsGz = new File(dlDir, "ubuntu-base-arm64.tar.gz");
         download("rootfs", ROOTFS_URLS, ROOTFS_SIZE, rootfsGz);
         log("解压 rootfs（1-2 分钟）…");
@@ -406,22 +422,34 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
-    String probe(String url) {
-        HttpURLConnection c = null;
-        try {
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(6000);
-            c.setReadTimeout(6000);
-            c.setRequestMethod("HEAD");
-            int code = c.getResponseCode();
-            return String.valueOf(code);
-        } catch (Throwable t) {
-            return t.getClass().getSimpleName();
-        } finally {
-            if (c != null) {
-                c.disconnect();
+    String probe(final String url) {
+        // 独立线程 + join 硬超时：DNS 被拦时也能 8 秒内返回
+        final String[] result = new String[] { null };
+        Thread t = new Thread() {
+            @Override public void run() {
+                HttpURLConnection c = null;
+                try {
+                    c = (HttpURLConnection) new URL(url).openConnection();
+                    c.setConnectTimeout(5000);
+                    c.setReadTimeout(5000);
+                    c.setRequestMethod("HEAD");
+                    result[0] = String.valueOf(c.getResponseCode());
+                } catch (Throwable tt) {
+                    result[0] = tt.getClass().getSimpleName();
+                } finally {
+                    if (c != null) {
+                        c.disconnect();
+                    }
+                }
             }
+        };
+        t.setDaemon(true);
+        t.start();
+        try {
+            t.join(8000);
+        } catch (InterruptedException ignore) {
         }
+        return result[0] == null ? "超时" : result[0];
     }
 
     void downloadOne(String url, long total, File out) throws Exception {
@@ -431,8 +459,8 @@ public class MainActivity extends Activity {
             have = 0;
         }
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(30000);
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(20000);
         if (have > 0) {
             conn.setRequestProperty("Range", "bytes=" + have + "-");
         }

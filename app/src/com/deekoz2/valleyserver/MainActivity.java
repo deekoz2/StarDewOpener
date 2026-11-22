@@ -54,8 +54,12 @@ public class MainActivity extends Activity {
     static final String ISSUES_URL = "https://github.com/deekoz2/StarDewOpener/issues/new";
 
     // rootfs: Ubuntu 22.04.5 base arm64（含 bash/glibc/libstdc++，约 26MB）
+    // 国内镜像优先（阿里云/华为云/清华/北外），官方与 ghfast 兜底
     static final String[] ROOTFS_URLS = {
+            "https://mirrors.aliyun.com/ubuntu-cdimage/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
+            "https://mirrors.huaweicloud.com/ubuntu-cdimage/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
             "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
+            "https://mirrors.bfsu.edu.cn/ubuntu-cdimage/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
             "https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
             "https://ghfast.top/https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
     };
@@ -377,10 +381,47 @@ public class MainActivity extends Activity {
                 log("✗ " + tag + " 大小不符（" + out.length() + " != " + size + "），换源重试");
                 out.delete();
             } catch (Exception e) {
-                log("✗ " + tag + " 该源失败：" + e.getMessage() + "，换源重试");
+                log("✗ " + tag + " 该源失败[" + e.getClass().getSimpleName() + "]: "
+                        + e.getMessage() + "，换源重试");
             }
         }
-        throw new Exception(tag + " 所有下载源均失败");
+        throw new Exception(tag + " 所有下载源均失败。网络自检: " + probeNet());
+    }
+
+    /** 全部源失败时，探测基础连通性，帮助区分「设备断网/被限制」与「镜像问题」 */
+    String probeNet() {
+        StringBuilder sb = new StringBuilder();
+        String[][] tests = {
+                {"百度", "https://www.baidu.com"},
+                {"阿里云", "https://mirrors.aliyun.com"},
+                {"GitHub", "https://github.com"},
+        };
+        for (int i = 0; i < tests.length; i++) {
+            sb.append(tests[i][0]).append("=").append(probe(tests[i][1]));
+            if (i < tests.length - 1) {
+                sb.append(" ");
+            }
+        }
+        sb.append("（若百度也不通=设备网络受限，请检查平板网络/家长控制权限）");
+        return sb.toString();
+    }
+
+    String probe(String url) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setConnectTimeout(6000);
+            c.setReadTimeout(6000);
+            c.setRequestMethod("HEAD");
+            int code = c.getResponseCode();
+            return String.valueOf(code);
+        } catch (Throwable t) {
+            return t.getClass().getSimpleName();
+        } finally {
+            if (c != null) {
+                c.disconnect();
+            }
+        }
     }
 
     void downloadOne(String url, long total, File out) throws Exception {
